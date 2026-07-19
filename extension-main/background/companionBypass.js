@@ -144,7 +144,19 @@ async function triggerBypass() {
 // cannot race-clear a freshly-added rule. This covers every restart path
 // (browser launch, extension update, and a plain event-driven wake) — which
 // onStartup/onInstalled alone would miss.
-deactivateCompanionBypass();
+// 
+// Note: We use a 50ms setTimeout to defer this call. Executing DNR updates 
+// synchronously during SW top-level evaluation throws "Error: No SW" because
+// the worker context is not fully initialized. The `_bypassTimer === null` 
+// check ensures we don't accidentally clear a brand new bypass triggered by 
+// a same-wake navigation event.
+setTimeout(() => {
+  if (_bypassTimer === null) {
+    deactivateCompanionBypass().catch((e) =>
+      console.error("[Scaler++ Bypass] Cold start cleanup failed:", e)
+    );
+  }
+}, 50);
 
 /**
  * Listen for tab navigations.
