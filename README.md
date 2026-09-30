@@ -62,6 +62,7 @@ Credits - Siddhanth kapoor
 Export your assignment problems, MCQs, and written code directly to formatted Markdown files for offline review or archiving.
 - Click **Export** to download the current problem.
 - Select **Export All (ZIP)** to seamlessly scrape and package your entire assignment session into a cleanly structured ZIP archive.
+- Select **Copy This Problem** or **Copy All** to copy a rendered preview straight to your clipboard — ready to paste into Google Docs, Notion, an email, or an LLM chat — without downloading anything.
 - Runs 100% locally in your browser. No backend required. Supports Coding, Single Correct, and Multiple Correct MCQs.
 
 ## 📘 Lecture Info
