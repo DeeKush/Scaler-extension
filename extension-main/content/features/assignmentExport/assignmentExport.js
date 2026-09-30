@@ -16,6 +16,10 @@ function initAssignmentExport() {
         return;
     }
 
+    // Cancel any Copy All ready-state left over from the previous page — the
+    // collected content belonged to that page, not this one.
+    if (typeof clearCopyAllReady === "function") clearCopyAllReady(false);
+
     // Check if the feature is enabled in settings
     if (typeof shouldHide === "function" && !shouldHide("assignment-export")) {
         // Remove existing button if feature is disabled
@@ -28,12 +32,12 @@ function initAssignmentExport() {
     const checkAndInject = () => {
         const statement = extractProblemStatement();
         if (statement && statement.trim().length > 0) {
-             createExportButton(exportAssignment, exportAllAssignments);
+             createExportButton(exportAssignment, exportAllAssignments, copyAssignment, copyAllAssignments);
         } else if (retries > 0) {
              retries--;
              setTimeout(checkAndInject, 1000);
         }
     };
-    
+
     checkAndInject();
 }

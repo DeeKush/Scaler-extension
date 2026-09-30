@@ -172,7 +172,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (value) {
         if (typeof initAssignmentExport === "function") initAssignmentExport();
       } else {
-        // teardown assignment-export: remove buttons
+        // teardown assignment-export: cancel any pending Copy All ready-state
+        // (clears its 60s timer) and remove buttons
+        if (typeof clearCopyAllReady === "function") clearCopyAllReady(false);
         document.querySelectorAll('[data-assignment-export-injected], .scaler-export-question').forEach(el => el.remove());
       }
     } else if (key === "lecture-summary") {
