@@ -7,10 +7,12 @@ const ICONS = {
     download: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>`,
     spinner: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></path></svg>`,
     check: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
-    error: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>`
+    error: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>`,
+    clipboard: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="4" rx="1" ry="1"></rect><path d="M9 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-4"></path></svg>`
 };
 
 let bulkExportInterval = null;
+let copyAllReadyState = null; // { wrapper, onConfirm, onCancel, timeoutId } — set while Copy All awaits its confirming click
 
 function clearBulkExportAnimation() {
     if (bulkExportInterval) {
@@ -57,37 +59,41 @@ function updateExportButtonText(text) {
     const tooltip = document.getElementById("scaler-export-tooltip");
     if (tooltip) tooltip.innerText = text;
 
-    const match = text.match(/Exporting (\d+\/\d+)\.\.\./);
+    const match = text.match(/(?:Exporting|Collecting) (\d+\/\d+)\.\.\./);
     if (match) {
         startBulkExportAnimation(match[1]);
     } else if (text === "Zipping...") {
         startBulkExportAnimation("ZIP");
+    } else if (text === "Copying...") {
+        startBulkExportAnimation("COPY");
     }
 }
 
 /**
  * Sets the export button status temporarily for success/failure
- * @param {'success'|'error'} status 
+ * @param {'success'|'error'} status
+ * @param {string} [message] - Tooltip text; defaults to the Export wording so
+ *   existing call sites (Export This Problem / Export All) don't need to change.
  */
-function setExportStatus(status) {
+function setExportStatus(status, message) {
     clearBulkExportAnimation();
     const wrapper = document.querySelector("[data-assignment-export-injected]");
     if (!wrapper) return;
-    
+
     const iconEl = document.getElementById("scaler-export-icon");
     const tooltip = document.getElementById("scaler-export-tooltip");
     if (!iconEl) return;
-    
+
     if (status === "success") {
         iconEl.innerHTML = ICONS.check;
         iconEl.style.color = "#10b981"; // green
-        if (tooltip) tooltip.innerText = "Export Complete";
+        if (tooltip) tooltip.innerText = message || "Export Complete";
     } else if (status === "error") {
         iconEl.innerHTML = ICONS.error;
         iconEl.style.color = "#ef4444"; // red
-        if (tooltip) tooltip.innerText = "Export Failed";
+        if (tooltip) tooltip.innerText = message || "Export Failed";
     }
-    
+
     setTimeout(() => {
         iconEl.innerHTML = ICONS.download;
         iconEl.style.color = "currentColor";
@@ -109,11 +115,104 @@ function setExportStatus(status) {
     }, 1500);
 }
 
+/**
+ * Arms the given button into a "ready to copy" state after Copy All has
+ * finished collecting every problem. The actual clipboard write happens on
+ * the NEXT click (a fresh user gesture) rather than here, because
+ * navigator.clipboard needs one and collection itself can take many seconds.
+ * @param {HTMLElement} wrapper - The button wrapper to arm, captured by the
+ *   caller BEFORE collection started. If collection outlives that page (a
+ *   SPA navigation swapped in a new button), this element is stale/detached
+ *   and must not be re-looked-up — arming a different page's button would be
+ *   wrong, so a stale wrapper cancels instead of arming.
+ * @param {number} count - Number of problems collected, shown in the tooltip.
+ * @param {() => void} onConfirm - Called when the user clicks to confirm the copy.
+ * @param {() => void} onCancel - Called if the state is cleared WITHOUT confirming
+ *   (60s timeout, teardown, re-injection, or a stale/missing wrapper) — used to
+ *   release the caller's exporting lock so it never gets stuck.
+ */
+function setCopyAllReady(wrapper, count, onConfirm, onCancel) {
+    clearCopyAllReady(false);
+
+    if (!wrapper || !wrapper.isConnected) {
+        // The bulk animation interval draws on whichever button currently
+        // matches [data-assignment-export-injected] (updateExportButtonText
+        // uses getElementById, not this wrapper) — if we don't stop it here
+        // it keeps animating forever on a DIFFERENT page's button.
+        clearBulkExportAnimation();
+
+        const currentWrapper = document.querySelector("[data-assignment-export-injected]");
+        if (currentWrapper) {
+            setExportStatus("error", "Copy cancelled (page changed)");
+        }
+
+        if (typeof onCancel === "function") onCancel();
+        return;
+    }
+
+    clearBulkExportAnimation();
+    wrapper.removeAttribute("data-exporting");
+    wrapper.setAttribute("data-copy-ready", "true");
+
+    const iconEl = wrapper.querySelector("#scaler-export-icon");
+    const tooltip = wrapper.querySelector("#scaler-export-tooltip");
+    if (iconEl) {
+        iconEl.innerHTML = ICONS.clipboard;
+        iconEl.style.color = "#2563eb"; // blue — a distinct "ready" affordance
+    }
+    if (tooltip) tooltip.innerText = `Click to copy ${count} problems`;
+
+    const timeoutId = setTimeout(() => {
+        clearCopyAllReady(false);
+    }, 60000);
+
+    copyAllReadyState = { wrapper, onConfirm, onCancel, timeoutId };
+}
+
+/**
+ * Cancels a pending "ready to copy" state and restores that button's idle
+ * appearance, acting only on the wrapper stored in copyAllReadyState (never
+ * re-querying the document, so it can't touch a different page's button).
+ * Calls the state's onCancel unless `confirmed` is true (i.e. the user's
+ * click is what's clearing it, and the caller is about to run onConfirm
+ * itself).
+ * @param {boolean} [confirmed]
+ */
+function clearCopyAllReady(confirmed) {
+    const state = copyAllReadyState;
+    if (!state) {
+        // Nothing pending — leave the icon/tooltip alone. Just in case,
+        // remove a stray attribute if one is somehow still set.
+        const stray = document.querySelector("[data-copy-ready]");
+        if (stray) stray.removeAttribute("data-copy-ready");
+        return;
+    }
+
+    if (state.timeoutId) clearTimeout(state.timeoutId);
+    copyAllReadyState = null;
+
+    const wrapper = state.wrapper;
+    if (wrapper) {
+        wrapper.removeAttribute("data-copy-ready");
+        const iconEl = wrapper.querySelector("#scaler-export-icon");
+        const tooltip = wrapper.querySelector("#scaler-export-tooltip");
+        if (iconEl) {
+            iconEl.innerHTML = ICONS.download;
+            iconEl.style.color = "currentColor";
+        }
+        if (tooltip) tooltip.innerText = "Export";
+    }
+
+    if (!confirmed && typeof state.onCancel === "function") {
+        state.onCancel();
+    }
+}
+
 
 /**
  * Injects the export dropdown button into the DOM
  */
-function createExportButton(onExportCurrent, onExportAll) {
+function createExportButton(onExportCurrent, onExportAll, onCopyCurrent, onCopyAll) {
     let headingTextDiv = document.querySelector(".cr-p-heading__text") || 
                          document.querySelector('[class*="heading__text"]') || 
                          document.querySelector('[class*="heading_text"]');
@@ -241,8 +340,35 @@ function createExportButton(onExportCurrent, onExportAll) {
     });
     optAll.addEventListener("mouseleave", () => optAll.style.backgroundColor = "transparent");
 
+    const optCopyCurrent = document.createElement("div");
+    optCopyCurrent.innerText = "Copy This Problem";
+    optCopyCurrent.style.padding = "8px 12px";
+    optCopyCurrent.style.fontSize = "13px";
+    optCopyCurrent.style.cursor = "pointer";
+    optCopyCurrent.style.color = "#333";
+    optCopyCurrent.style.borderTop = "1px solid #eee";
+    optCopyCurrent.style.transition = "background-color 0.2s";
+    optCopyCurrent.addEventListener("mouseenter", () => {
+        if (!wrapper.hasAttribute("data-exporting")) optCopyCurrent.style.backgroundColor = "#f5f5f5";
+    });
+    optCopyCurrent.addEventListener("mouseleave", () => optCopyCurrent.style.backgroundColor = "transparent");
+
+    const optCopyAll = document.createElement("div");
+    optCopyAll.innerText = "Copy All";
+    optCopyAll.style.padding = "8px 12px";
+    optCopyAll.style.fontSize = "13px";
+    optCopyAll.style.cursor = "pointer";
+    optCopyAll.style.color = "#333";
+    optCopyAll.style.transition = "background-color 0.2s";
+    optCopyAll.addEventListener("mouseenter", () => {
+        if (!wrapper.hasAttribute("data-exporting")) optCopyAll.style.backgroundColor = "#f5f5f5";
+    });
+    optCopyAll.addEventListener("mouseleave", () => optCopyAll.style.backgroundColor = "transparent");
+
     dropdownMenu.appendChild(optCurrent);
     dropdownMenu.appendChild(optAll);
+    dropdownMenu.appendChild(optCopyCurrent);
+    dropdownMenu.appendChild(optCopyAll);
     wrapper.appendChild(linkContainer);
     wrapper.appendChild(dropdownMenu);
 
@@ -283,8 +409,18 @@ function createExportButton(onExportCurrent, onExportAll) {
 
     linkContainer.addEventListener("click", (e) => {
         e.stopPropagation();
+
+        // Copy All finished collecting and is waiting for this click (a fresh
+        // user gesture) to actually write to the clipboard.
+        if (wrapper.hasAttribute("data-copy-ready")) {
+            const state = copyAllReadyState;
+            clearCopyAllReady(true);
+            if (state && typeof state.onConfirm === "function") state.onConfirm();
+            return;
+        }
+
         if (wrapper.hasAttribute("data-exporting")) return;
-        
+
         // Close any other open dropdowns globally
         document.querySelectorAll("[data-assignment-export-injected] > div:nth-child(2)").forEach(menu => {
             if (menu !== dropdownMenu) menu.style.display = "none";
@@ -325,6 +461,16 @@ function createExportButton(onExportCurrent, onExportAll) {
     optAll.addEventListener("click", (e) => {
         e.stopPropagation();
         handleExport(onExportAll, true);
+    });
+
+    optCopyCurrent.addEventListener("click", (e) => {
+        e.stopPropagation();
+        handleExport(onCopyCurrent, false);
+    });
+
+    optCopyAll.addEventListener("click", (e) => {
+        e.stopPropagation();
+        handleExport(onCopyAll, true);
     });
 
     headingTextDiv.appendChild(wrapper);
