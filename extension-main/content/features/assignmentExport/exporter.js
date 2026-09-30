@@ -8,8 +8,23 @@
 let isExporting = false;
 
 /**
+ * Scrapes the current page into the same fields object generateMarkdown(),
+ * generateHtml() and generatePlainText() all accept, so Export and Copy stay
+ * byte-identical to each other for the same scraped data.
+ */
+async function buildCurrentProblemFields() {
+    const title = extractProblemTitle(document);
+    const statement = extractProblemStatement(document);
+    const mcqOptions = extractMCQOptions(document);
+    const sessionTitle = extractSessionTitle(document);
+    const questionType = determineQuestionType(document, mcqOptions);
+    const code = await getEditorCode();
+    return { title, sessionTitle, questionNumber: "1", questionType, statement, mcqOptions, code };
+}
+
+/**
  * Orchestrates the export of the current active problem.
- * 
+ *
  * @purpose Coordinates data extraction, Markdown generation, and single file downloading.
  * @returns {Promise<void>}
  * @sideeffects Updates UI loading state, reads DOM, triggers browser download.
@@ -18,44 +33,26 @@ let isExporting = false;
 async function exportAssignment() {
     if (isExporting) return;
     isExporting = true;
-    
+
     try {
         updateExportButtonText("Exporting...");
 
-    // 1. Parse data
-    const title = extractProblemTitle(document);
-    const statement = extractProblemStatement(document);
-    const mcqOptions = extractMCQOptions(document);
-    const sessionTitle = extractSessionTitle(document);
-    const questionType = determineQuestionType(document, mcqOptions);
-    
-    // 2. Fetch code
-    const code = await getEditorCode();
+        const fields = await buildCurrentProblemFields();
+        const markdownContent = generateMarkdown(fields);
 
-    // 3. Generate Markdown
-    const markdownContent = generateMarkdown({ 
-        title, 
-        sessionTitle, 
-        questionNumber: "1", 
-        questionType, 
-        statement, 
-        mcqOptions, 
-        code 
-    });
+        // Sanitize and Download
+        const safeTitle = (fields.title || "Assignment")
+            .replace(/[\\/:*?"<>|]/g, "")
+            .replace(/\s+/g, " ")
+            .replace(/^\.+|\.+$/g, "") // Remove leading/trailing dots
+            .substring(0, 80)
+            .trim();
 
-    // 4. Sanitize and Download
-    const safeTitle = (title || "Assignment")
-        .replace(/[\\/:*?"<>|]/g, "")
-        .replace(/\s+/g, " ")
-        .replace(/^\.+|\.+$/g, "") // Remove leading/trailing dots
-        .substring(0, 80)
-        .trim();
+        const filename = `01 - ${safeTitle || "Problem"}.md`;
+        const blob = new Blob([markdownContent], { type: "text/markdown" });
+        downloadBlob(blob, filename);
 
-    const filename = `01 - ${safeTitle || "Problem"}.md`;
-    const blob = new Blob([markdownContent], { type: "text/markdown" });
-    downloadBlob(blob, filename);
-    
-    setExportStatus("success");
+        setExportStatus("success");
     } catch (e) {
         console.error("Assignment Export failed:", e);
         setExportStatus("error");
