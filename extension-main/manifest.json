@@ -100,6 +100,7 @@
         "content/features/assignmentExport/markdown.js",
         "content/features/assignmentExport/zip.js",
         "content/features/assignmentExport/downloader.js",
+        "content/features/assignmentExport/clipboard.js",
         "content/features/assignmentExport/exporter.js",
         "content/features/assignmentExport/assignmentExport.js",
         "content/features/vimMode/vimMode.js",
